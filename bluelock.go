@@ -1,13 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"time"
-
-	"tinygo.org/x/bluetooth"
 )
 
 // Configuration struct to hold all settings
@@ -18,8 +19,6 @@ type Config struct {
 	DesktopEnv             string        `json:"desktop_env"`
 	Debug                  bool          `json:"debug"`
 }
-
-var adapter = bluetooth.DefaultAdapter
 
 // DefaultConfig provides default values for the configuration file.
 var DefaultConfig = Config{
@@ -159,61 +158,53 @@ func UnlockSystem(env string) {
 
 // Define RSSI thresholds for locking and unlocking
 const (
-	LockRSSI   = -70 // RSSI threshold for locking (when device is out of range)
-	UnlockRSSI = -60 // RSSI threshold for unlocking (when device is in range)
+	LockRSSI   = -14 // RSSI threshold for locking (when device is out of range)
+	UnlockRSSI = -14 // RSSI threshold for unlocking (when device is in range)
 )
 
-// PingBluetoothDevice scans for the Bluetooth device, checking if it’s within a certain RSSI range.
+// PingBluetoothDevice uses `hcitool` to check the RSSI of a Bluetooth device for proximity detection.
 func PingBluetoothDevice(deviceAddr string) (bool, error) {
-	// Enable the Bluetooth adapter
-	err := adapter.Enable()
+	// Run `hcitool` to check RSSI
+	cmd := exec.Command("hcitool", "rssi", deviceAddr)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+
+	// Execute the command and capture the output
+	err := cmd.Run()
 	if err != nil {
-		fmt.Println("Failed to enable Bluetooth adapter:", err)
+		fmt.Println("Error executing hcitool:", err)
 		return false, err
 	}
 
-	// Channel to signal the RSSI state (in range or out of range)
-	deviceInRange := make(chan bool, 1)
-
-	// Start scanning in a separate goroutine
-	go func() {
-		adapter.Scan(func(adapter *bluetooth.Adapter, result bluetooth.ScanResult) {
-			// Check if the discovered device matches the target address
-			if result.Address.String() == deviceAddr {
-				fmt.Println(result.RSSI)
-				fmt.Printf("Found device with RSSI: %d dBm\n", result.RSSI)
-
-				// Check RSSI against the thresholds
-				if result.RSSI >= UnlockRSSI {
-					// Device is close enough for unlocking
-					deviceInRange <- true
-				} else if result.RSSI <= LockRSSI {
-					// Device is far enough to consider locking
-					deviceInRange <- false
-				}
-
-				adapter.StopScan() // Stop scanning once the device is processed
-			}
-		})
-	}()
-
-	// Set a timeout for the scan (e.g., 5 seconds)
-	timeout := time.After(5 * time.Second)
-
-	// Wait for either a range determination or the timeout
-	select {
-	case inRange := <-deviceInRange:
-		if inRange {
-			fmt.Println("Device is in range.")
-		} else {
-			fmt.Println("Device is out of range.")
+	// Parse the output to find the RSSI value
+	output := out.String()
+	if strings.Contains(output, "RSSI return value") {
+		// Extract the RSSI value from the output
+		parts := strings.Split(output, ":")
+		if len(parts) < 2 {
+			fmt.Println("Unexpected hcitool output format:", output)
+			return false, nil
 		}
-		return inRange, nil
-	case <-timeout:
-		fmt.Println("Device not found within timeout.")
-		adapter.StopScan() // Ensure scanning stops if timeout is reached
-		return false, nil
+		rssiStr := strings.TrimSpace(parts[1])
+		rssi, err := strconv.Atoi(rssiStr)
+		if err != nil {
+			fmt.Println("Failed to parse RSSI value:", err)
+			return false, err
+		}
+
+		// Check if RSSI meets the proximity thresholds
+		fmt.Printf("RSSI: %d dBm\n", rssi)
+		if rssi >= UnlockRSSI {
+			return true, nil // Device is close enough for unlocking
+		} else if rssi <= LockRSSI {
+			return false, nil // Device is far enough to lock
+		}
 	}
+
+	// If RSSI not found in output, assume device is out of range
+	fmt.Println("Device not found or out of range.")
+	return false, nil
 }
 
 // MonitorBluetooth monitors the Bluetooth device connection and locks/unlocks based on range.
