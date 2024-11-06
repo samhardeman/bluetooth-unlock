@@ -16,6 +16,8 @@ type Config struct {
 	BluetoothDeviceAddress string        `json:"bluetooth_device_address"`
 	CheckInterval          time.Duration `json:"check_interval"`
 	CheckRepeat            int           `json:"check_repeat"`
+	LockRSSI               int           `json:"lock_rssi"`
+	UnlockRSSI             int           `json:"unlock_rssi"`
 	DesktopEnv             string        `json:"desktop_env"`
 	Debug                  bool          `json:"debug"`
 }
@@ -25,6 +27,8 @@ var DefaultConfig = Config{
 	BluetoothDeviceAddress: "XX:XX:XX:XX:XX:XX",
 	CheckInterval:          5 * time.Second,
 	CheckRepeat:            3,
+	LockRSSI:               -14,
+	UnlockRSSI:             -14,
 	DesktopEnv:             "CINNAMON",
 	Debug:                  true,
 }
@@ -156,16 +160,10 @@ func UnlockSystem(env string) {
 	fmt.Println("System unlocked.")
 }
 
-// Define RSSI thresholds for locking and unlocking
-const (
-	LockRSSI   = -14 // RSSI threshold for locking (when device is out of range)
-	UnlockRSSI = -14 // RSSI threshold for unlocking (when device is in range)
-)
-
 // PingBluetoothDevice uses `hcitool` to check the RSSI of a Bluetooth device for proximity detection.
-func PingBluetoothDevice(deviceAddr string) (bool, error) {
+func PingBluetoothDevice(config *Config) (bool, error) {
 	// Run `hcitool` to check RSSI
-	cmd := exec.Command("hcitool", "rssi", deviceAddr)
+	cmd := exec.Command("hcitool", "rssi", config.BluetoothDeviceAddress)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
@@ -195,9 +193,9 @@ func PingBluetoothDevice(deviceAddr string) (bool, error) {
 
 		// Check if RSSI meets the proximity thresholds
 		fmt.Printf("RSSI: %d dBm\n", rssi)
-		if rssi >= UnlockRSSI {
+		if rssi >= config.UnlockRSSI {
 			return true, nil // Device is close enough for unlocking
-		} else if rssi <= LockRSSI {
+		} else if rssi <= config.LockRSSI {
 			return false, nil // Device is far enough to lock
 		}
 	}
@@ -213,7 +211,7 @@ func MonitorBluetooth(config *Config) {
 
 	for {
 		// Check if the device is in range
-		inRange, err := PingBluetoothDevice(config.BluetoothDeviceAddress)
+		inRange, err := PingBluetoothDevice(config)
 		if err != nil {
 			fmt.Println("Error during Bluetooth scan:", err)
 			continue
