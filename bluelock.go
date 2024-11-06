@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"strconv"
@@ -11,7 +12,7 @@ import (
 	"time"
 )
 
-// Configuration struct to hold all settings
+// Configuration struct holds all the necessary settings for the application.
 type Config struct {
 	BluetoothDeviceAddress string        `json:"bluetooth_device_address"`
 	CheckInterval          time.Duration `json:"check_interval"`
@@ -19,6 +20,7 @@ type Config struct {
 	LockRSSI               int           `json:"lock_rssi"`
 	UnlockRSSI             int           `json:"unlock_rssi"`
 	DesktopEnv             string        `json:"desktop_env"`
+	SessionTimeout         time.Duration `json:"session_timeout"`
 	Debug                  bool          `json:"debug"`
 }
 
@@ -30,29 +32,34 @@ var DefaultConfig = Config{
 	LockRSSI:               -14,
 	UnlockRSSI:             -14,
 	DesktopEnv:             "CINNAMON",
+	SessionTimeout:         30 * time.Minute, // Default session timeout added
 	Debug:                  true,
 }
 
 // InitializeConfig initializes configuration values, either from a file or using defaults.
 func InitializeConfig() *Config {
-	// Check if config.json exists
+	// Check if config.json exists, and create if necessary.
 	if _, err := os.Stat("config.json"); os.IsNotExist(err) {
-		fmt.Println("Config file not found. Creating default config.json...")
 		if err := WriteDefaultConfig("config.json"); err != nil {
-			fmt.Println("Error creating default config.json:", err)
+			log.Fatalf("Error creating default config.json: %v", err)
 		}
 	}
 
-	// Load the configuration from the file
+	// Attempt to load configuration from the file.
 	config, err := LoadConfig("config.json")
 	if err != nil {
-		fmt.Println("Error loading config.json, using defaults:", err)
+		log.Printf("Error loading config.json, using defaults: %v", err)
 		return &DefaultConfig
 	}
 
-	// Set a default CheckInterval if it's not specified in the config file
+	// Ensure CheckInterval is set correctly, fallback to default if not specified.
 	if config.CheckInterval == 0 {
-		config.CheckInterval = 5 * time.Second
+		config.CheckInterval = DefaultConfig.CheckInterval
+	}
+
+	// Ensure SessionTimeout is set correctly, fallback to default if not specified.
+	if config.SessionTimeout == 0 {
+		config.SessionTimeout = DefaultConfig.SessionTimeout
 	}
 
 	return config
@@ -60,66 +67,60 @@ func InitializeConfig() *Config {
 
 // WriteDefaultConfig creates a config.json file with default settings.
 func WriteDefaultConfig(filename string) error {
+	// Open or create the config file.
 	file, err := os.Create(filename)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create config file: %w", err)
 	}
 	defer file.Close()
 
-	// Convert CheckInterval to seconds for JSON
-	tempConfig := struct {
-		BluetoothDeviceAddress string `json:"bluetooth_device_address"`
-		CheckInterval          int    `json:"check_interval"` // Interval in seconds
-		CheckRepeat            int    `json:"check_repeat"`
-		DesktopEnv             string `json:"desktop_env"`
-		Debug                  bool   `json:"debug"`
-	}{
-		BluetoothDeviceAddress: DefaultConfig.BluetoothDeviceAddress,
-		CheckInterval:          int(DefaultConfig.CheckInterval.Seconds()),
-		CheckRepeat:            DefaultConfig.CheckRepeat,
-		DesktopEnv:             DefaultConfig.DesktopEnv,
-		Debug:                  DefaultConfig.Debug,
-	}
-
+	// Encode default config to JSON with indentation.
 	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ") // Format JSON with indentation
-	if err := encoder.Encode(tempConfig); err != nil {
-		return err
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(DefaultConfig); err != nil {
+		return fmt.Errorf("failed to encode default config: %w", err)
 	}
 
-	fmt.Println("Default config.json created.")
+	log.Println("Default config.json created.")
 	return nil
 }
 
 // LoadConfig loads configuration from a JSON file.
 func LoadConfig(filename string) (*Config, error) {
+	// Open the config file.
 	file, err := os.Open(filename)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to open config file: %w", err)
 	}
 	defer file.Close()
 
-	// Use a temporary struct for JSON unmarshalling
-	tempConfig := struct {
+	// Create a temporary struct to hold the unmarshalled JSON.
+	var tempConfig struct {
 		BluetoothDeviceAddress string `json:"bluetooth_device_address"`
-		CheckInterval          int    `json:"check_interval"` // Expect interval in seconds
+		CheckInterval          int    `json:"check_interval"` // Interval in seconds
 		CheckRepeat            int    `json:"check_repeat"`
+		LockRSSI               int    `json:"lock_rssi"`
+		UnlockRSSI             int    `json:"unlock_rssi"`
 		DesktopEnv             string `json:"desktop_env"`
+		SessionTimeout         int    `json:"session_timeout"` // Expect session timeout in seconds
 		Debug                  bool   `json:"debug"`
-	}{}
-
-	decoder := json.NewDecoder(file)
-	err = decoder.Decode(&tempConfig)
-	if err != nil {
-		return nil, err
 	}
 
-	// Convert CheckInterval from seconds to time.Duration
+	// Decode JSON into the temporary struct.
+	decoder := json.NewDecoder(file)
+	if err := decoder.Decode(&tempConfig); err != nil {
+		return nil, fmt.Errorf("failed to decode config file: %w", err)
+	}
+
+	// Convert tempConfig to the final Config struct.
 	config := &Config{
 		BluetoothDeviceAddress: tempConfig.BluetoothDeviceAddress,
 		CheckInterval:          time.Duration(tempConfig.CheckInterval) * time.Second,
 		CheckRepeat:            tempConfig.CheckRepeat,
+		LockRSSI:               tempConfig.LockRSSI,
+		UnlockRSSI:             tempConfig.UnlockRSSI,
 		DesktopEnv:             tempConfig.DesktopEnv,
+		SessionTimeout:         time.Duration(tempConfig.SessionTimeout) * time.Second,
 		Debug:                  tempConfig.Debug,
 	}
 
@@ -171,8 +172,10 @@ func PingBluetoothDevice(config *Config) (bool, error) {
 	// Execute the command and capture the output
 	err := cmd.Run()
 	if err != nil {
-		fmt.Println("Error executing hcitool:", err)
-		return false, err
+		// If the device is disconnected or `hcitool` fails, catch the error
+		fmt.Printf("Error executing hcitool: %s\n", err)
+		// Return false to indicate that the device is out of range
+		return false, nil
 	}
 
 	// Parse the output to find the RSSI value
@@ -192,7 +195,6 @@ func PingBluetoothDevice(config *Config) (bool, error) {
 		}
 
 		// Check if RSSI meets the proximity thresholds
-		fmt.Printf("RSSI: %d dBm\n", rssi)
 		if rssi >= config.UnlockRSSI {
 			return true, nil // Device is close enough for unlocking
 		} else if rssi <= config.LockRSSI {
@@ -207,22 +209,40 @@ func PingBluetoothDevice(config *Config) (bool, error) {
 
 // MonitorBluetooth monitors the Bluetooth device connection and locks/unlocks based on range.
 func MonitorBluetooth(config *Config) {
-	mode := "locked" // Initial state
+	mode := "locked"               // Initial state
+	lastUnlockedTime := time.Now() // Track the last unlock time
 
 	for {
-		// Check if the device is in range
+		// Check if the device is in range using the configured RSSI thresholds
 		inRange, err := PingBluetoothDevice(config)
 		if err != nil {
 			fmt.Println("Error during Bluetooth scan:", err)
 			continue
 		}
 
+		currentTime := time.Now()
+
+		// If device is in range and was previously locked, unlock it
 		if inRange && mode == "locked" {
-			// Unlock if device is in range and was previously locked
 			UnlockSystem(config.DesktopEnv)
+			lastUnlockedTime = currentTime // Update the last unlocked time
 			mode = "unlocked"
 		} else if !inRange && mode == "unlocked" {
-			// Lock if device is out of range and was previously unlocked
+			// If device is out of range and was previously unlocked, lock it
+			LockSystem(config.DesktopEnv)
+			mode = "locked"
+		}
+
+		// If the device is disconnected and the session is unlocked, lock the system
+		if !inRange && mode == "unlocked" {
+			// Lock system if device is disconnected
+			LockSystem(config.DesktopEnv)
+			mode = "locked"
+		}
+
+		// Check for session timeout
+		if mode == "unlocked" && currentTime.Sub(lastUnlockedTime) > config.SessionTimeout {
+			fmt.Println("Session timeout reached. Locking system.")
 			LockSystem(config.DesktopEnv)
 			mode = "locked"
 		}
