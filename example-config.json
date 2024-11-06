@@ -1,8 +1,0 @@
-{
-    "bluetooth_device_address": "XX:XX:XX:XX:XX:XX",
-    "check_interval": 2,
-    "check_repeat": 3,
-    "desktop_env": "CINNAMON",
-    "debug": false
-  }
-  

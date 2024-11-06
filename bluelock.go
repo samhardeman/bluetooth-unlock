@@ -2,129 +2,51 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
+	"flag"
 	"fmt"
-	"log"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// Configuration struct holds all the necessary settings for the application.
-type Config struct {
-	BluetoothDeviceAddress string        `json:"bluetooth_device_address"`
-	CheckInterval          time.Duration `json:"check_interval"`
-	CheckRepeat            int           `json:"check_repeat"`
-	LockRSSI               int           `json:"lock_rssi"`
-	UnlockRSSI             int           `json:"unlock_rssi"`
-	DesktopEnv             string        `json:"desktop_env"`
-	SessionTimeout         time.Duration `json:"session_timeout"`
-	Debug                  bool          `json:"debug"`
-}
+// Declare command-line flags.
+var (
+	BluetoothDeviceAddress string
+	CheckInterval          time.Duration
+	CheckRepeat            int
+	LockRSSI               int
+	UnlockRSSI             int
+	DesktopEnv             string
+	SessionTimeout         time.Duration
+	Debug                  bool
+)
 
-// DefaultConfig provides default values for the configuration file.
-var DefaultConfig = Config{
-	BluetoothDeviceAddress: "XX:XX:XX:XX:XX:XX",
-	CheckInterval:          5 * time.Second,
-	CheckRepeat:            3,
-	LockRSSI:               -14,
-	UnlockRSSI:             -14,
-	DesktopEnv:             "CINNAMON",
-	SessionTimeout:         30 * time.Minute, // Default session timeout added
-	Debug:                  true,
-}
+// Default values for flags
+const (
+	defaultBluetoothDeviceAddress = "XX:XX:XX:XX:XX:XX"
+	defaultCheckInterval          = 5 * time.Second
+	defaultCheckRepeat            = 3
+	defaultLockRSSI               = -14
+	defaultUnlockRSSI             = -14
+	defaultDesktopEnv             = "CINNAMON"
+	defaultSessionTimeout         = 30 * time.Minute
+	defaultDebug                  = true
+)
 
-// InitializeConfig initializes configuration values, either from a file or using defaults.
-func InitializeConfig() *Config {
-	// Check if config.json exists, and create if necessary.
-	if _, err := os.Stat("config.json"); os.IsNotExist(err) {
-		if err := WriteDefaultConfig("config.json"); err != nil {
-			log.Fatalf("Error creating default config.json: %v", err)
-		}
-	}
+// InitializeFlags initializes command-line flags and sets default values.
+func InitializeFlags() {
+	flag.StringVar(&BluetoothDeviceAddress, "bluetooth_device_address", defaultBluetoothDeviceAddress, "Bluetooth device address")
+	flag.DurationVar(&CheckInterval, "check_interval", defaultCheckInterval, "Interval between checks")
+	flag.IntVar(&CheckRepeat, "check_repeat", defaultCheckRepeat, "Number of times to check the device")
+	flag.IntVar(&LockRSSI, "lock_rssi", defaultLockRSSI, "RSSI value to lock the system")
+	flag.IntVar(&UnlockRSSI, "unlock_rssi", defaultUnlockRSSI, "RSSI value to unlock the system")
+	flag.StringVar(&DesktopEnv, "desktop_env", defaultDesktopEnv, "Desktop environment (e.g., CINNAMON, GNOME, KDE)")
+	flag.DurationVar(&SessionTimeout, "session_timeout", defaultSessionTimeout, "Session timeout duration")
+	flag.BoolVar(&Debug, "debug", defaultDebug, "Enable debug mode")
 
-	// Attempt to load configuration from the file.
-	config, err := LoadConfig("config.json")
-	if err != nil {
-		log.Printf("Error loading config.json, using defaults: %v", err)
-		return &DefaultConfig
-	}
-
-	// Ensure CheckInterval is set correctly, fallback to default if not specified.
-	if config.CheckInterval == 0 {
-		config.CheckInterval = DefaultConfig.CheckInterval
-	}
-
-	// Ensure SessionTimeout is set correctly, fallback to default if not specified.
-	if config.SessionTimeout == 0 {
-		config.SessionTimeout = DefaultConfig.SessionTimeout
-	}
-
-	return config
-}
-
-// WriteDefaultConfig creates a config.json file with default settings.
-func WriteDefaultConfig(filename string) error {
-	// Open or create the config file.
-	file, err := os.Create(filename)
-	if err != nil {
-		return fmt.Errorf("failed to create config file: %w", err)
-	}
-	defer file.Close()
-
-	// Encode default config to JSON with indentation.
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(DefaultConfig); err != nil {
-		return fmt.Errorf("failed to encode default config: %w", err)
-	}
-
-	log.Println("Default config.json created.")
-	return nil
-}
-
-// LoadConfig loads configuration from a JSON file.
-func LoadConfig(filename string) (*Config, error) {
-	// Open the config file.
-	file, err := os.Open(filename)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open config file: %w", err)
-	}
-	defer file.Close()
-
-	// Create a temporary struct to hold the unmarshalled JSON.
-	var tempConfig struct {
-		BluetoothDeviceAddress string `json:"bluetooth_device_address"`
-		CheckInterval          int    `json:"check_interval"` // Interval in seconds
-		CheckRepeat            int    `json:"check_repeat"`
-		LockRSSI               int    `json:"lock_rssi"`
-		UnlockRSSI             int    `json:"unlock_rssi"`
-		DesktopEnv             string `json:"desktop_env"`
-		SessionTimeout         int    `json:"session_timeout"` // Expect session timeout in seconds
-		Debug                  bool   `json:"debug"`
-	}
-
-	// Decode JSON into the temporary struct.
-	decoder := json.NewDecoder(file)
-	if err := decoder.Decode(&tempConfig); err != nil {
-		return nil, fmt.Errorf("failed to decode config file: %w", err)
-	}
-
-	// Convert tempConfig to the final Config struct.
-	config := &Config{
-		BluetoothDeviceAddress: tempConfig.BluetoothDeviceAddress,
-		CheckInterval:          time.Duration(tempConfig.CheckInterval) * time.Second,
-		CheckRepeat:            tempConfig.CheckRepeat,
-		LockRSSI:               tempConfig.LockRSSI,
-		UnlockRSSI:             tempConfig.UnlockRSSI,
-		DesktopEnv:             tempConfig.DesktopEnv,
-		SessionTimeout:         time.Duration(tempConfig.SessionTimeout) * time.Second,
-		Debug:                  tempConfig.Debug,
-	}
-
-	return config, nil
+	// Parse the flags
+	flag.Parse()
 }
 
 // LockSystem locks the system based on desktop environment
@@ -162,9 +84,9 @@ func UnlockSystem(env string) {
 }
 
 // PingBluetoothDevice uses `hcitool` to check the RSSI of a Bluetooth device for proximity detection.
-func PingBluetoothDevice(config *Config) (bool, error) {
+func PingBluetoothDevice() (bool, error) {
 	// Run `hcitool` to check RSSI
-	cmd := exec.Command("hcitool", "rssi", config.BluetoothDeviceAddress)
+	cmd := exec.Command("hcitool", "rssi", BluetoothDeviceAddress)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
@@ -195,9 +117,9 @@ func PingBluetoothDevice(config *Config) (bool, error) {
 		}
 
 		// Check if RSSI meets the proximity thresholds
-		if rssi >= config.UnlockRSSI {
+		if rssi >= UnlockRSSI {
 			return true, nil // Device is close enough for unlocking
-		} else if rssi <= config.LockRSSI {
+		} else if rssi <= LockRSSI {
 			return false, nil // Device is far enough to lock
 		}
 	}
@@ -208,13 +130,13 @@ func PingBluetoothDevice(config *Config) (bool, error) {
 }
 
 // MonitorBluetooth monitors the Bluetooth device connection and locks/unlocks based on range.
-func MonitorBluetooth(config *Config) {
+func MonitorBluetooth() {
 	mode := "locked"               // Initial state
 	lastUnlockedTime := time.Now() // Track the last unlock time
 
 	for {
 		// Check if the device is in range using the configured RSSI thresholds
-		inRange, err := PingBluetoothDevice(config)
+		inRange, err := PingBluetoothDevice()
 		if err != nil {
 			fmt.Println("Error during Bluetooth scan:", err)
 			continue
@@ -224,38 +146,43 @@ func MonitorBluetooth(config *Config) {
 
 		// If device is in range and was previously locked, unlock it
 		if inRange && mode == "locked" {
-			UnlockSystem(config.DesktopEnv)
+			UnlockSystem(DesktopEnv)
 			lastUnlockedTime = currentTime // Update the last unlocked time
 			mode = "unlocked"
 		} else if !inRange && mode == "unlocked" {
 			// If device is out of range and was previously unlocked, lock it
-			LockSystem(config.DesktopEnv)
+			LockSystem(DesktopEnv)
 			mode = "locked"
 		}
 
 		// If the device is disconnected and the session is unlocked, lock the system
 		if !inRange && mode == "unlocked" {
 			// Lock system if device is disconnected
-			LockSystem(config.DesktopEnv)
+			LockSystem(DesktopEnv)
 			mode = "locked"
 		}
 
 		// Check for session timeout
-		if mode == "unlocked" && currentTime.Sub(lastUnlockedTime) > config.SessionTimeout {
+		if mode == "unlocked" && currentTime.Sub(lastUnlockedTime) > SessionTimeout {
 			fmt.Println("Session timeout reached. Locking system.")
-			LockSystem(config.DesktopEnv)
+			LockSystem(DesktopEnv)
 			mode = "locked"
 		}
 
 		// Wait before the next check
-		time.Sleep(config.CheckInterval)
+		time.Sleep(CheckInterval)
 	}
 }
 
 func main() {
-	config := InitializeConfig()
-	fmt.Println(config.DesktopEnv)
-	fmt.Println(config.BluetoothDeviceAddress)
-	fmt.Println("Bluetooth-Unlock is now active!")
-	MonitorBluetooth(config)
+	// Initialize command-line flags
+	InitializeFlags()
+
+	// Print the parsed config values
+	fmt.Println("Bluetooth Unlock is now active!")
+	fmt.Printf("Desktop Environment: %s\n", DesktopEnv)
+	fmt.Printf("Bluetooth Device Address: %s\n", BluetoothDeviceAddress)
+
+	// Monitor Bluetooth connection and manage lock/unlock states
+	MonitorBluetooth()
 }
